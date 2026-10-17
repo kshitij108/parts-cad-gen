@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# Customer files and the database are confidential and never committed.
+data/
+*.db
+*.egg-info/

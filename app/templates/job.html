@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} · parts-cad{% endblock %}
+{% block content %}
+{% set locked = job.status in ('approved', 'rejected') %}
+
+<section class="card head">
+  <div>
+    <h1>{{ job.title }}</h1>
+    <p class="muted">Run #{{ job.current_run }} · created {{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+  </div>
+  <span class="pill {{ job.status }}">{{ job.status.replace('_', ' ') }}</span>
+</section>
+
+<div class="reviewer card">
+  <label>Reviewer name (recorded on every decision)<input id="reviewer" placeholder="Your name" autocomplete="name"></label>
+</div>
+
+{# ---------------------------------------------------------------- files #}
+<section class="card">
+  <h2>Files</h2>
+  <table>
+    <thead><tr><th>File</th><th>Detected</th><th>Role</th><th>SHA-256</th></tr></thead>
+    {% for f in job.files %}
+      {% set idf = (intake.files | selectattr('file_id', 'equalto', f.id) | first) if intake else None %}
+      <tr>
+        <td>{{ f.original_name }}</td>
+        <td>{{ idf.kind if idf else '—' }}{% if idf and not idf.supported %} <span class="sev warn">unsupported</span><div class="muted small">{{ idf.note }}</div>{% endif %}</td>
+        <td>{{ idf.role if idf else '—' }}</td>
+        <td class="mono small muted">{{ f.sha256[:16] }}…</td>
+      </tr>
+    {% endfor %}
+  </table>
+</section>
+
+{# ---------------------------------------------------- questions + spec #}
+<section class="card">
+  <h2>Open questions {% if questions %}<span class="count">{{ questions|length }}</span>{% endif %}</h2>
+  {% if questions %}
+  <ul class="questions">
+    {% for q in questions %}
+      <li><span class="sev {{ 'critical' if q.blocking else 'info' }}">{{ 'blocking' if q.blocking else 'check' }}</span>
+          <span class="tag">ask {{ q.ask }}</span> {{ q.question }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="muted">None.</p>{% endif %}
+
+  {% if not locked %}
+  <details {% if job.status == 'needs_info' %}open{% endif %}>
+    <summary>Answer / change job details (re-runs the pipeline and clears line decisions)</summary>
+    <form method="post" action="/jobs/{{ job.id }}/spec" class="grid needs-actor">
+      <input type="hidden" name="actor">
+      <label>Material
+        <select name="material_id">
+          <option value="">— not stated —</option>
+          {% for m in rc.materials %}<option value="{{ m.id }}" {% if spec.material_id == m.id %}selected{% endif %}>{{ m.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Quantities<input name="quantities" value="{{ spec.quantities|join(', ') }}" placeholder="1, 10, 50"></label>
+      <label>Required by<input type="date" name="deadline" value="{{ spec.deadline or '' }}"></label>
+      <label>Tightest tolerance band (mm)<input name="tightest_tolerance_mm" value="{{ spec.tightest_tolerance_mm if spec.tightest_tolerance_mm is not none else '' }}"></label>
+      <fieldset class="span2"><legend>Finishes</legend>
+        {% for f in rc.finishes %}<label class="check"><input type="checkbox" name="finish_ids" value="{{ f.id }}" {% if f.id in spec.finish_ids %}checked{% endif %}> {{ f.name }}</label>{% endfor %}
+      </fieldset>
+      <div class="span2"><button type="submit">Save and re-run</button></div>
+    </form>
+  </details>
+  {% endif %}
+</section>
+
+{# ------------------------------------------------------------ geometry #}
+<section class="card">
+  <h2>Geometry</h2>
+  {% if geometry %}
+  <dl class="facts">
+    <div><dt>Bounding box</dt><dd>{{ '%.2f'|format(geometry.bbox_mm.x) }} × {{ '%.2f'|format(geometry.bbox_mm.y) }} × {{ '%.2f'|format(geometry.bbox_mm.z) }} mm</dd></div>
+    <div><dt>Volume</dt><dd>{{ '{:,.1f}'.format(geometry.volume_mm3 / 1000) }} cm³</dd></div>
+    <div><dt>Surface area</dt><dd>{{ '{:,.1f}'.format(geometry.surface_area_mm2 / 100) }} cm²</dd></div>
+    <div><dt>Bodies</dt><dd>{{ geometry.solid_count }}</dd></div>
+    <div><dt>Min wall (est.)</dt><dd>{{ geometry.wall_thickness.min_mm if geometry.wall_thickness.min_mm is not none else '—' }} mm <span class="muted small">({{ geometry.wall_thickness.samples }} samples)</span></dd></div>
+    <div><dt>Faces</dt><dd>{% for k, v in geometry.face_type_counts.items() %}{{ k }} {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>
+  </dl>
+  <h3>Feature candidates</h3>
+  <ul class="plain">
+    <li>{{ geometry.hole_candidates|length }} hole candidates{% if geometry.hole_candidates %}: {% for h in geometry.hole_candidates %}Ø{{ '%.2f'|format(h.diameter_mm) }}×{{ '%.1f'|format(h.depth_mm) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</li>
+    <li>{{ geometry.concave_radii|length }} internal radii</li>
+    <li>{{ geometry.sharp_internal_edges|length }} sharp internal edges</li>
+  </ul>
+  {% for w in geometry.warnings %}<p class="muted small">⚠ {{ w }}</p>{% endfor %}
+  {% else %}
+    {% set r = runs.get('geometry') %}
+    <p class="muted">{% if r and r.status == 'error' %}Geometry failed: <span class="mono small">{{ r.error.splitlines()[0] }}</span>{% elif r %}{{ r.error }}{% else %}Not run.{% endif %}</p>
+  {% endif %}
+</section>
+
+{# ----------------------------------------------------------------- DFM #}
+<section class="card">
+  <h2>DFM report {% if dfm %}<span class="count">{{ dfm.flags|length }}</span>{% endif %}</h2>
+  {% if dfm %}
+    {% for f in dfm.flags %}
+    <article class="flag {{ f.severity }}">
+      <header><span class="sev {{ f.severity }}">{{ f.severity }}</span> <strong>{{ f.title }}</strong></header>
+      <p><span class="muted">Measured</span> {{ f.measured }} · <span class="muted">Limit</span> {{ f.threshold }}</p>
+      <p>{{ f.explanation or f.reason }}</p>
+      <p><span class="muted">Suggested fix:</span> {{ f.suggested_fix }}</p>
+      <details><summary>Evidence</summary><ul class="evidence">{% for e in f.evidence %}<li><span class="tag">{{ e.source }}</span> <span class="mono small">{{ e.ref }}</span> = {{ e.detail }}</li>{% endfor %}</ul></details>
+    </article>
+    {% else %}<p class="muted">No flags from the checks that ran.</p>{% endfor %}
+    <p class="small"><span class="muted">Checks run:</span> {{ dfm.checks_run|join(', ') }}</p>
+    <p class="small"><span class="muted">Not checked (a clean report doesn't cover these):</span></p>
+    <ul class="small muted">{% for k, why in dfm.checks_skipped.items() %}<li>{{ k }}: {{ why }}</li>{% endfor %}</ul>
+  {% else %}<p class="muted">Not run.</p>{% endif %}
+</section>
+
+{# --------------------------------------------------------------- quote #}
+<section class="card">
+  <h2>Draft quote</h2>
+  {% if quote and quote.status == 'draft' %}
+    <p class="muted">Ranges come from the rate card's calibration factors. Approve a line at a value in its range, or edit it with a reason, or reject it. Amounts are lot totals in {{ quote.currency }}.</p>
+    {% for qq in quote.quantities %}
+    <h3>Qty {{ qq.quantity }}
+      <span class="muted small">· draft {{ qq.total_low|money }}–{{ qq.total_high|money }} ({{ qq.unit_low|money }}–{{ qq.unit_high|money }} / part) · lead ≈ {{ qq.lead_days }} days</span>
+      {% if totals[qq.quantity] is not none %}<span class="final">final {{ totals[qq.quantity]|money }} ({{ (totals[qq.quantity] / qq.quantity)|money }} / part)</span>{% endif %}
+    </h3>
+    <table class="lines">
+      <thead><tr><th>Line</th><th class="num">Low</th><th class="num">High</th><th>Decision</th></tr></thead>
+      <tbody>
+      {% for l in qq.lines %}
+        {% set d = decisions.get(l.id) %}
+        <tr id="{{ l.id }}" class="{{ d.action if d else 'undecided' }}">
+          <td>
+            <strong>{{ l.label }}</strong>
+            <div class="mono small">{{ l.formula }}</div>
+            <details><summary class="small">Evidence &amp; assumptions</summary>
+              <ul class="evidence">
+                {% for e in l.evidence %}<li><span class="tag">{{ e.source }}</span> <span class="mono small">{{ e.ref }}</span> = {{ e.detail }}</li>{% endfor %}
+                {% for a in l.assumptions %}<li><span class="tag">assumption</span> {{ a }}</li>{% endfor %}
+              </ul>
+            </details>
+          </td>
+          <td class="num">{{ l.low|money }}</td>
+          <td class="num">{{ l.high|money }}</td>
+          <td class="decide">
+            {% if d %}<div class="small"><span class="sev {{ 'info' if d.action == 'approve' else 'warn' if d.action == 'edit' else 'critical' }}">{{ d.action }}</span>
+              {% if d.amount is not none %}{{ d.amount|money }}{% endif %} · {{ d.actor }}{% if d.note %} · “{{ d.note }}”{% endif %}</div>{% endif %}
+            {% if not locked %}
+            <form method="post" action="/jobs/{{ job.id }}/lines/{{ l.id }}" class="inline needs-actor">
+              <input type="hidden" name="actor">
+              <input name="amount" inputmode="decimal" value="{{ '%.2f'|format(d.amount if d and d.amount is not none else (l.low + l.high) / 2) }}" aria-label="Amount">
+              <input name="note" placeholder="note (required to edit/reject)" value="">
+              <button name="action" value="approve">Approve</button>
+              <button name="action" value="edit" class="secondary">Edit</button>
+              <button name="action" value="reject" class="danger">Reject</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+    <h3>Assumptions</h3>
+    <ul>{% for a in quote.assumptions %}<li>{{ a }}</li>{% endfor %}</ul>
+    <p><a href="/jobs/{{ job.id }}/quote.csv">Download quote CSV</a></p>
+  {% elif quote %}
+    <p>Quote is <strong>blocked</strong> until the open questions above are answered.</p>
+  {% else %}<p class="muted">Not run.</p>{% endif %}
+</section>
+
+{# ------------------------------------------------------------ approval #}
+<section class="card">
+  <h2>Approval</h2>
+  {% if job.status == 'approved' %}
+    {% set pkg = job.packages|sort(attribute='created_at')|last %}
+    <p>Approved by <strong>{{ pkg.approved_by }}</strong> on {{ pkg.created_at.strftime('%Y-%m-%d %H:%M') }}. The package is frozen.</p>
+    <p><a href="/jobs/{{ job.id }}/package.json">Download package (JSON)</a></p>
+  {% elif job.status == 'rejected' %}
+    <p>Rejected.</p>
+  {% else %}
+    {% if blockers %}<ul class="blockers">{% for b in blockers %}<li>{{ b }}</li>{% endfor %}</ul>{% endif %}
+    <form method="post" action="/jobs/{{ job.id }}/approve" class="inline needs-actor">
+      <input type="hidden" name="actor">
+      <input name="note" placeholder="Approval note (optional)">
+      <button {% if blockers %}disabled{% endif %}>Approve package</button>
+    </form>
+    <form method="post" action="/jobs/{{ job.id }}/reject" class="inline needs-actor">
+      <input type="hidden" name="actor">
+      <input name="note" placeholder="Reason for rejecting" required>
+      <button class="danger">Reject job</button>
+    </form>
+  {% endif %}
+</section>
+
+{# --------------------------------------------------------------- trail #}
+<section class="card">
+  <h2>Trail</h2>
+  <details><summary>Stage runs ({{ job.runs|length }})</summary>
+    <table>
+      <thead><tr><th>Run</th><th>Stage</th><th>Status</th><th>At</th><th>Note</th></tr></thead>
+      {% for r in job.runs|reverse %}
+      <tr><td>{{ r.run_no }}</td><td>{{ r.stage }}</td><td>{{ r.status }}</td><td class="muted small">{{ r.created_at.strftime('%H:%M:%S') }}</td><td class="mono small">{{ (r.error or '').splitlines()[0] if r.error else '' }}</td></tr>
+      {% endfor %}
+    </table>
+  </details>
+  <details open><summary>Review events ({{ job.events|length }})</summary>
+    <table>
+      <thead><tr><th>At</th><th>Who</th><th>Action</th><th>Target</th><th class="num">Amount</th><th>Note</th></tr></thead>
+      {% for e in job.events|reverse %}
+      <tr><td class="muted small">{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td class="mono small">{{ e.target }}</td>
+        <td class="num">{{ e.amount|money if e.amount is not none else '' }}</td><td class="small">{{ e.note if e.action != 'update_spec' else '' }}</td></tr>
+      {% else %}<tr><td colspan="6" class="muted">No decisions yet.</td></tr>{% endfor %}
+    </table>
+  </details>
+</section>
+
+<section class="card danger-zone">
+  <h2>Delete job</h2>
+  <p class="muted">Removes the uploaded originals, every stage output and the review trail. This can't be undone.</p>
+  <form method="post" action="/jobs/{{ job.id }}/delete" class="inline">
+    <input name="confirm" placeholder="Type DELETE">
+    <button class="danger">Delete permanently</button>
+  </form>
+</section>
+
+<script>
+  // Reviewer name is typed once and attached to every decision form.
+  const who = document.getElementById('reviewer');
+  try { who.value = localStorage.getItem('reviewer') || ''; } catch (e) {}
+  who.addEventListener('input', () => { try { localStorage.setItem('reviewer', who.value); } catch (e) {} });
+  document.querySelectorAll('form.needs-actor').forEach(f => f.addEventListener('submit', ev => {
+    if (!who.value.trim()) { ev.preventDefault(); who.focus(); who.reportValidity?.(); alert('Enter your reviewer name first.'); return; }
+    f.querySelector('input[name=actor]').value = who.value.trim();
+  }));
+</script>
+{% endblock %}

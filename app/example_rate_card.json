@@ -1,0 +1,39 @@
+{
+  "shop_name": "Example Shop (replace with your numbers)",
+  "currency": "USD",
+  "machines": [
+    {"id": "vmc-small", "name": "Small VMC", "axes": 3, "envelope_mm": {"x": 500, "y": 400, "z": 400},
+     "hourly_rate": 85.0, "standard_tolerance_mm": 0.1, "best_tolerance_mm": 0.02},
+    {"id": "vmc-large", "name": "Large VMC", "axes": 3, "envelope_mm": {"x": 1000, "y": 500, "z": 500},
+     "hourly_rate": 110.0, "standard_tolerance_mm": 0.1, "best_tolerance_mm": 0.025}
+  ],
+  "materials": [
+    {"id": "al6061", "name": "Aluminium 6061-T6", "density_g_cm3": 2.70, "price_per_kg": 9.0,
+     "stock_allowance_mm": 3.0, "plate_thicknesses_mm": [6.35, 9.53, 12.7, 19.05, 25.4, 31.75, 38.1, 50.8, 63.5, 76.2],
+     "roughing_cm3_per_min": 60.0, "finishing_cm2_per_min": 25.0, "min_wall_mm": 0.8},
+    {"id": "ss304", "name": "Stainless 304", "density_g_cm3": 8.0, "price_per_kg": 12.0,
+     "stock_allowance_mm": 3.0, "plate_thicknesses_mm": [],
+     "roughing_cm3_per_min": 10.0, "finishing_cm2_per_min": 8.0, "min_wall_mm": 1.0},
+    {"id": "pom", "name": "Acetal (POM)", "density_g_cm3": 1.41, "price_per_kg": 14.0,
+     "stock_allowance_mm": 3.0, "plate_thicknesses_mm": [],
+     "roughing_cm3_per_min": 80.0, "finishing_cm2_per_min": 30.0, "min_wall_mm": 1.5}
+  ],
+  "finishes": [
+    {"id": "anodize-clear", "name": "Clear anodize (Type II)", "vendor": "Outside vendor", "lot_charge": 150.0, "per_part": 4.0, "lead_days": 5},
+    {"id": "bead-blast", "name": "Bead blast", "vendor": null, "lot_charge": 0.0, "per_part": 3.0, "lead_days": 1}
+  ],
+  "labor": {
+    "setup_hours_per_setup": 0.75,
+    "programming_hours_base": 1.0,
+    "programming_hours_per_feature": 0.1,
+    "inspection_minutes_per_part": 5.0,
+    "inspection_hourly_rate": 70.0,
+    "tight_tolerance_inspection_factor": 1.5
+  },
+  "margin_pct": 20.0,
+  "min_order_charge": 150.0,
+  "base_lead_days": 5,
+  "shop_hours_per_day": 8.0,
+  "calibration": {"multiplier": 1.0, "low_factor": 0.8, "high_factor": 1.35},
+  "dfm": {"min_tool_diameter_mm": 1.0, "hole_depth_ratio_warn": 4.0, "hole_depth_ratio_critical": 10.0}
+}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>New job</h1>
+  <p class="muted">Phase 1: 3-axis CNC milling. Upload a STEP model and, if you have it, the PDF drawing. Leave anything you don't know blank; it will be listed as an open question, not guessed.</p>
+  <form method="post" action="/jobs" enctype="multipart/form-data" class="grid">
+    <label class="span2">Files (STEP + PDF)<input type="file" name="files" multiple required accept=".step,.stp,.pdf,.iges,.igs,.x_t,.sldprt,.dxf"></label>
+    <label>Job title<input name="title" placeholder="Customer / part number"></label>
+    <label>Material
+      <select name="material_id">
+        <option value="">— not stated —</option>
+        {% for m in rc.materials %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Quantities<input name="quantities" placeholder="1, 10, 50"></label>
+    <label>Required by<input type="date" name="deadline"></label>
+    <label>Tightest tolerance band (mm)<input name="tightest_tolerance_mm" inputmode="decimal" placeholder="e.g. 0.05 for ±0.025"></label>
+    <fieldset><legend>Finishes</legend>
+      {% for f in rc.finishes %}<label class="check"><input type="checkbox" name="finish_ids" value="{{ f.id }}"> {{ f.name }}</label>{% endfor %}
+    </fieldset>
+    <label class="span2">Customer notes<textarea name="customer_notes" rows="2"></textarea></label>
+    <div class="span2"><button type="submit">Upload and analyse</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Jobs</h2>
+  {% if jobs %}
+  <table>
+    <thead><tr><th>Job</th><th>Status</th><th>Files</th><th>Created</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td><a href="/jobs/{{ j.id }}">{{ j.title }}</a></td>
+        <td><span class="pill {{ j.status }}">{{ j.status.replace('_', ' ') }}</span></td>
+        <td>{{ j.files|length }}</td>
+        <td class="muted">{{ j.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No jobs yet.</p>{% endif %}
+</section>
+{% endblock %}

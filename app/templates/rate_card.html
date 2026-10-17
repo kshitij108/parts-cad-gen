@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Rate card · parts-cad{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Rate card: {{ rc.shop_name }}</h1>
+  <p class="muted">Every quote number comes from here. Nothing generic is built in. Saving re-validates the whole card; existing jobs keep the rates they were quoted with until re-run.</p>
+
+  <h3>Machines</h3>
+  <table>
+    <thead><tr><th>Machine</th><th>Envelope (mm)</th><th class="num">Rate / h</th><th class="num">Std / best tol (mm)</th></tr></thead>
+    {% for m in rc.machines %}
+    <tr><td>{{ m.name }} <span class="muted">({{ m.id }})</span></td><td>{{ m.envelope_mm.x|int }} × {{ m.envelope_mm.y|int }} × {{ m.envelope_mm.z|int }}</td>
+      <td class="num">{{ m.hourly_rate|money }}</td><td class="num">{{ m.standard_tolerance_mm }} / {{ m.best_tolerance_mm }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3>Materials</h3>
+  <table>
+    <thead><tr><th>Material</th><th class="num">$/kg</th><th class="num">Rough cm³/min</th><th class="num">Finish cm²/min</th><th class="num">Min wall</th><th>Plate stock</th></tr></thead>
+    {% for m in rc.materials %}
+    <tr><td>{{ m.name }} <span class="muted">({{ m.id }})</span></td><td class="num">{{ m.price_per_kg|money }}</td>
+      <td class="num">{{ m.roughing_cm3_per_min }}</td><td class="num">{{ m.finishing_cm2_per_min }}</td><td class="num">{{ m.min_wall_mm }}</td>
+      <td class="muted">{{ m.plate_thicknesses_mm|join(', ') or 'cut to size' }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3>Finishes</h3>
+  <table>
+    <thead><tr><th>Finish</th><th>Vendor</th><th class="num">Lot</th><th class="num">Per part</th><th class="num">Lead days</th></tr></thead>
+    {% for f in rc.finishes %}
+    <tr><td>{{ f.name }}</td><td>{{ f.vendor or '—' }}</td><td class="num">{{ f.lot_charge|money }}</td><td class="num">{{ f.per_part|money }}</td><td class="num">{{ f.lead_days }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <p class="muted">Margin {{ rc.margin_pct }}% · minimum order {{ rc.min_order_charge|money }} · calibration ×{{ rc.calibration.multiplier }} (range ×{{ rc.calibration.low_factor }}–×{{ rc.calibration.high_factor }})</p>
+</section>
+
+<section class="card">
+  <h2>Edit</h2>
+  <p class="muted">A structured editor comes later; for now edit the JSON directly. Invalid cards are rejected with the reason.</p>
+  <form method="post" action="/rate-card">
+    <textarea name="raw" rows="30" class="mono">{{ raw }}</textarea>
+    <button type="submit">Save rate card</button>
+  </form>
+</section>
+{% endblock %}
