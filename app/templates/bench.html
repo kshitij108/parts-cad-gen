@@ -27,6 +27,9 @@
     <fieldset class="span2"><legend>Input styles</legend>
       <label class="check"><input type="checkbox" name="variants" value="drawing" checked> clean drawing</label>
       <label class="check"><input type="checkbox" name="variants" value="sketch"> hand-sketch style</label>
+      <label class="check"><input type="checkbox" name="variants" value="pdf"> PDF print</label>
+      <label class="check"><input type="checkbox" name="variants" value="scan"> 300 dpi scan (TIFF, skewed, noisy)</label>
+      <label class="check"><input type="checkbox" name="variants" value="photo"> phone photo (JPEG, EXIF-rotated, perspective)</label>
     </fieldset>
     <div class="span2"><button>Run benchmark</button> <span class="small muted">Live runs call the Claude API once to read each part and up to "attempts" times to plan it.</span></div>
   </form>

@@ -39,16 +39,16 @@ from OCP.gp import gp_Trsf, gp_Vec
 
 from app.build.agent import ClaudeExtractor, ClaudePlanner, LLMError, StaticExtractor, StaticPlanner
 from app.build.bench.cases import BY_NAME, CASES, BenchCase, mutator
+from app.build.bench.inputs import VARIANTS, preview_png, render_input
 from app.build.builder import build
 from app.build.derive import derive_spec, no_scale_spec
 from app.build.measure import Measurer
 from app.build.pipeline import generate
 from app.build.schemas import DimensionSpec, RequiredDimension, readiness
-from app.build.sheet import make_sheet, to_png, to_svg
+from app.build.sheet import make_sheet, to_svg
 from app.build.verify import check_dimension, verify
 
 AGENTS = ("oracle", "mutant", "live-plan", "live")
-VARIANTS = ("drawing", "sketch")
 
 
 @dataclass
@@ -160,16 +160,19 @@ def run_case(case: BenchCase, variant: str, agent: str, out: Path, attempts: int
             res.notes.append("Ground truth dropped: " + "; ".join(dropped))
         sheet = make_sheet(gt_shape, gt_spec, None, mode="input", title=case.title, material=case.material)
         drawing_spec = gt_spec
-    png = to_png(sheet, dpi=150, style="sketch" if variant == "sketch" else "clean", seed=zlib.crc32(case.name.encode()) % 1000)
-    (d / "input.png").write_bytes(png)
-    res.files["input"] = str((d / "input.png").relative_to(out))
+    name, data = render_input(sheet, res.variant, zlib.crc32(case.name.encode()) % 1000)
+    inp = d / name
+    inp.write_bytes(data)
+    (d / "input_preview.png").write_bytes(preview_png(sheet, res.variant, data))
+    res.files["input"] = str((d / "input_preview.png").relative_to(out))
+    res.files["input_file"] = str(inp.relative_to(out))
     (d / "ground_truth.json").write_text(json.dumps({"plan": gt_plan.model_dump(mode="json"),
                                                      "spec": gt_spec.model_dump(mode="json")}, indent=1))
     res.holes_expected = len(Measurer(gt_shape).holes)
 
     extractor, planner = agents_for(agent, case, gt_spec)
     try:
-        spec, usage = extractor.extract([d / "input.png"], None)
+        spec, usage = extractor.extract([inp], None)
     except LLMError as e:
         res.outcome, res.notes = "error", res.notes + [f"Extraction failed: {e}"]
         res.seconds = time.time() - t0
@@ -201,7 +204,7 @@ def run_case(case: BenchCase, variant: str, agent: str, out: Path, attempts: int
         res.seconds = time.time() - t0
         return res
 
-    recs = generate(spec, [d / "input.png"], planner, d, max_attempts=1 if agent == "mutant" else attempts,
+    recs = generate(spec, [inp], planner, d, max_attempts=1 if agent == "mutant" else attempts,
                     title=case.title, material=case.material)
     res.attempts = len(recs)
     for r in recs:
@@ -304,7 +307,9 @@ def render_html(summary: dict, results: list[CaseResult]) -> str:
                     f"<td>{r.tokens_in + r.tokens_out}</td><td>{r.seconds:.1f}s</td></tr>")
     details = []
     for r in results:
-        imgs = f"<figure><img src='{e(r.files['input'])}'><figcaption>Input the agent saw</figcaption></figure>" if "input" in r.files else ""
+        imgs = (f"<figure><img src='{e(r.files['input'])}'><figcaption>Input the agent saw "
+                f"(<a href='{e(r.files.get('input_file', r.files['input']))}'>file</a>, pixels as stored)</figcaption></figure>"
+                if "input" in r.files else "")
         if "generated" in r.files:
             imgs += f"<figure><img src='{e(r.files['generated'])}'><figcaption>Generated model (measured)</figcaption></figure>"
         notes = "".join(f"<li>{e(n)}</li>" for n in r.notes)
@@ -342,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--agent", default="oracle", choices=AGENTS)
     ap.add_argument("--cases", default="", help="comma-separated case names (default: all)")
-    ap.add_argument("--variants", default="drawing", help="drawing,sketch")
+    ap.add_argument("--variants", default="drawing", help="comma-separated: " + ",".join(VARIANTS))
     ap.add_argument("--attempts", type=int, default=3)
     ap.add_argument("--out", default="data/bench")
     a = ap.parse_args(argv)
