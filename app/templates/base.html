@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}parts-cad{% endblock %}</title>
+  {% block head %}{% endblock %}
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="top">
     <a class="brand" href="/">parts-cad</a>
-    <nav><a href="/">Jobs</a><a href="/rate-card">Rate card</a></nav>
+    <nav><a href="/">Quotes</a><a href="/builds">Builds</a><a href="/bench">Bench</a><a href="/rate-card">Rate card</a></nav>
   </header>
   <main>
     {% if shop.rate_card_is_example %}
@@ -18,5 +19,6 @@
     {% if error %}<div class="banner err">{{ error }}</div>{% endif %}
     {% block content %}{% endblock %}
   </main>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

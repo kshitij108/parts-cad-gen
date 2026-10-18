@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Bench · parts-cad{% endblock %}
+{% block head %}{% if runs and runs[0].summary is none %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Build benchmark</h1>
+  <p class="muted">Rebuilds {{ cases|length }} reference parts from drawings rendered from known-good models, then scores each result against the reference, not against the agent's own reading. A model that passes its own check but fails the reference is a <strong>confident wrong</strong> answer, the failure that matters most.</p>
+  <ul class="small">
+    <li><strong>oracle</strong>: correct spec and plan. Must score 100%; checks the harness itself.</li>
+    <li><strong>mutant</strong>: correct spec, plan with one deliberate error per part. Verification must catch every one.</li>
+    <li><strong>live-plan</strong>: correct spec, Claude writes the plan. Measures planning alone.</li>
+    <li><strong>live</strong>: Claude reads the drawing and writes the plan. End to end.</li>
+  </ul>
+  <div class="banner {{ 'ok' if llm_ok else 'warn' }} small">{{ llm_msg }}</div>
+  <form method="post" action="/bench" class="grid">
+    <label>Agent
+      <select name="agent">
+        <option value="oracle">oracle</option><option value="mutant">mutant</option>
+        <option value="live-plan" {% if not llm_ok %}disabled{% endif %}>live-plan (Claude)</option>
+        <option value="live" {% if not llm_ok %}disabled{% endif %}>live (Claude)</option>
+      </select>
+    </label>
+    <label>Attempts per part<input name="attempts" value="3"></label>
+    <fieldset class="span2"><legend>Parts (none ticked = all)</legend>
+      {% for c in cases %}<label class="check" title="{{ c.tests }}"><input type="checkbox" name="cases" value="{{ c.name }}"> {{ c.name }}</label>{% endfor %}
+    </fieldset>
+    <fieldset class="span2"><legend>Input styles</legend>
+      <label class="check"><input type="checkbox" name="variants" value="drawing" checked> clean drawing</label>
+      <label class="check"><input type="checkbox" name="variants" value="sketch"> hand-sketch style</label>
+    </fieldset>
+    <div class="span2"><button>Run benchmark</button> <span class="small muted">Live runs call the Claude API once to read each part and up to "attempts" times to plan it.</span></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Runs</h2>
+  {% if runs %}
+  <table>
+    <thead><tr><th>Run</th><th>Result</th><th>Confident wrong</th><th>Refusals</th><th class="num">Mean IoU</th><th class="num">Read correctly</th><th class="num">Tokens</th></tr></thead>
+    {% for r in runs %}{% set s = r.summary %}
+    <tr>
+      <td>{% if s %}<a href="/bench/{{ r.name }}/report.html" target="_blank">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</td>
+      {% if s %}
+      <td>{% if s.agent == 'mutant' %}{{ s.mutations_caught }}/{{ s.mutations }} errors caught{% else %}{{ s.passed }}/{{ s.cases }} passed{% endif %}</td>
+      <td>{{ s.confident_wrong }}</td><td>{{ s.refusals_correct }}/{{ s.refusal_cases }}</td>
+      <td class="num">{{ s.mean_iou if s.mean_iou is not none else '—' }}</td>
+      <td class="num">{{ '%d/%d'|format(s.read_correct, s.read_total) if s.read_total else '—' }}</td>
+      <td class="num">{{ s.tokens_in + s.tokens_out }}</td>
+      {% else %}<td colspan="6" class="muted">running (or stopped before finishing)…</td>{% endif %}
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">No runs yet.</p>{% endif %}
+</section>
+{% endblock %}

@@ -25,7 +25,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import review, storage
+from app.build import jobs as build_jobs
+from app.build.agent import ClaudeExtractor, ClaudePlanner
 from app.db import Job, JobFile, ReviewEvent, Shop, make_engine, make_sessionmaker
+from app.web_build import add_build_routes
 from app.pipeline.runner import latest_outputs, open_questions, run_pipeline
 from app.schemas import DfmReport, DrawingExtraction, GeometrySummary, IntakeResult, JobSpec, RateCard
 
@@ -64,9 +67,22 @@ def create_app(db_url: str | None = None) -> FastAPI:
         if s.scalar(select(Shop)) is None:
             s.add(Shop(name=EXAMPLE_RATE_CARD["shop_name"], rate_card=EXAMPLE_RATE_CARD, rate_card_is_example=True))
 
+    # Claude-backed by default; tests and the benchmark swap in offline stand-ins.
+    app.state.make_extractor = ClaudeExtractor
+    app.state.make_planner = ClaudePlanner
+
     def db():
-        with Sessions.begin() as s:
+        # Plain session with an explicit commit, so routes that hand work to a
+        # background task can commit first (the task opens its own session).
+        s = Sessions()
+        try:
             yield s
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
 
     def shop(s: Session = Depends(db)) -> Shop:
         return s.scalar(select(Shop))
@@ -81,7 +97,7 @@ def create_app(db_url: str | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request, error: str | None = None, s: Session = Depends(db), sh: Shop = Depends(shop)):
-        jobs = s.scalars(select(Job).where(Job.shop_id == sh.id).order_by(Job.created_at.desc())).all()
+        jobs = s.scalars(select(Job).where(Job.shop_id == sh.id, Job.kind == "quote").order_by(Job.created_at.desc())).all()
         rc = RateCard.model_validate(sh.rate_card)
         return templates.TemplateResponse(request, "index.html", {"jobs": jobs, "rc": rc, "shop": sh, "error": error})
 
@@ -130,6 +146,8 @@ def create_app(db_url: str | None = None) -> FastAPI:
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     def job_view(job_id: str, request: Request, error: str | None = None, s: Session = Depends(db), sh: Shop = Depends(shop)):
         job = get_job(job_id, s, sh)
+        if job.kind == "build":
+            return RedirectResponse(f"/builds/{job.id}" + (f"?{request.url.query}" if request.url.query else ""), status_code=303)
         runs = latest_outputs(job)
 
         def out(stage, model):
@@ -149,6 +167,9 @@ def create_app(db_url: str | None = None) -> FastAPI:
             "decisions": review.line_decisions(job),
             "totals": review.totals(job),
             "blockers": review.approval_blockers(job),
+            "parent": s.get(Job, job.parent_id) if job.parent_id else None,
+            "fixable": {f.id for f in build_jobs.fixable_flags(job)},
+            "model_file": next((f for f in job.files if f.id == (out("intake", IntakeResult).model_file_id if out("intake", IntakeResult) else None)), None),
         })
 
     @app.post("/jobs/{job_id}/spec")
@@ -219,8 +240,9 @@ def create_app(db_url: str | None = None) -> FastAPI:
         if confirm != "DELETE":
             return _back(f"/jobs/{job.id}", "Type DELETE to confirm.")
         storage.delete_job_files(job.id)
+        kind = job.kind
         s.delete(job)
-        return _back("/")
+        return _back("/builds" if kind == "build" else "/")
 
     @app.get("/jobs/{job_id}/quote.csv")
     def quote_csv(job_id: str, s: Session = Depends(db), sh: Shop = Depends(shop)):
@@ -269,5 +291,6 @@ def create_app(db_url: str | None = None) -> FastAPI:
         sh.rate_card_is_example = False
         return _back("/rate-card")
 
+    add_build_routes(app, templates, db, shop, Sessions)
     return app
 

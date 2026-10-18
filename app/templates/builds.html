@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Builds · parts-cad{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>New build</h1>
+  <p class="muted">Upload a sketch, photo, scanned drawing or PDF print. The dimensions are read first and shown to you for confirmation; a model is only shown once it measures correctly against them.</p>
+  <div class="banner {{ 'ok' if llm_ok else 'warn' }}">{{ llm_msg }}{% if not llm_ok %} You can still type the dimensions and paste a build plan by hand.{% endif %}</div>
+  <form method="post" action="/builds" enctype="multipart/form-data" class="grid">
+    <label class="span2">Inputs (PNG, JPG, PDF)<input type="file" name="files" multiple required accept=".png,.jpg,.jpeg,.gif,.webp,.pdf"></label>
+    <label>Part name<input name="title" placeholder="e.g. Motor bracket"></label>
+    <label>Material (for the later quote)
+      <select name="material_id">
+        <option value="">— not stated —</option>
+        {% for m in rc.materials %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Quantities (for the later quote)<input name="quantities" placeholder="1, 10, 50"></label>
+    <fieldset><legend>Finishes</legend>
+      {% for f in rc.finishes %}<label class="check"><input type="checkbox" name="finish_ids" value="{{ f.id }}"> {{ f.name }}</label>{% endfor %}
+    </fieldset>
+    <label class="span2">Notes for the reader (scale reference, units, anything not on the input)<textarea name="notes" rows="2" placeholder="e.g. the coin in the photo is a 24.26 mm quarter"></textarea></label>
+    <div class="span2"><button type="submit">Upload</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Build jobs</h2>
+  {% if jobs %}
+  <table>
+    <thead><tr><th>Part</th><th>Status</th><th>Inputs</th><th>Created</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td><a href="/builds/{{ j.id }}">{{ j.title }}</a></td>
+        <td><span class="pill {{ j.status }}">{{ j.status.replace('_', ' ') }}</span></td>
+        <td>{{ j.files|length }}</td>
+        <td class="muted">{{ j.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No build jobs yet.</p>{% endif %}
+</section>
+{% endblock %}

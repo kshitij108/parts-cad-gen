@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} · build · parts-cad{% endblock %}
+{% block head %}{% if busy %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
+{% block content %}
+{% set locked = job.status == 'accepted' %}
+
+<section class="card head">
+  <div>
+    <h1>{{ job.title }}</h1>
+    <p class="muted">Build job · created {{ job.created_at.strftime('%Y-%m-%d %H:%M') }}
+      {% if jobspec.material_id %} · material {{ jobspec.material_id }}{% endif %}
+      {% if jobspec.quantities %} · qty {{ jobspec.quantities|join(', ') }}{% endif %}</p>
+  </div>
+  <span class="pill {{ job.status }}">{{ job.status.replace('_', ' ') }}</span>
+</section>
+
+<div class="reviewer card">
+  <label>Reviewer name (recorded on every decision)<input id="reviewer" placeholder="Your name" autocomplete="name"></label>
+</div>
+
+{% if busy %}
+<div class="banner warn">{{ 'Reading the inputs' if job.status == 'extracting' else 'Generating and verifying the model' }}… this page refreshes itself.
+  <form method="post" action="/builds/{{ job.id }}/reset" class="inline needs-actor" style="display:inline-flex">
+    <input type="hidden" name="actor"><button class="secondary">Stop waiting</button>
+  </form>
+</div>
+{% endif %}
+
+{# --------------------------------------------------------------- inputs #}
+<section class="card">
+  <h2>1. Inputs</h2>
+  <div class="thumbs">
+    {% for f in input_files %}
+      {% if f.original_name.lower().endswith('.pdf') %}
+        <a class="thumb pdf" href="/jobs/{{ job.id }}/files/{{ f.id }}" target="_blank">PDF<br><span class="small">{{ f.original_name }}</span></a>
+      {% else %}
+        <a class="thumb" href="/jobs/{{ job.id }}/files/{{ f.id }}" target="_blank"><img src="/jobs/{{ job.id }}/files/{{ f.id }}" alt="{{ f.original_name }}"></a>
+      {% endif %}
+    {% else %}<p class="muted">No image or PDF inputs.</p>{% endfor %}
+  </div>
+  {% if jobspec.customer_notes %}<p class="small"><span class="muted">Notes:</span> {{ jobspec.customer_notes }}</p>{% endif %}
+  <div class="banner {{ 'ok' if llm_ok else 'warn' }} small">{{ llm_msg }}</div>
+  {% if extraction %}
+    {% if extraction.status == 'error' %}<div class="banner err small">Last extraction failed: {{ extraction.error }}</div>
+    {% elif extraction.output and extraction.output.usage %}<p class="small muted">Last extraction: {{ extraction.output.usage.model }}, {{ extraction.output.usage.input_tokens }} in / {{ extraction.output.usage.output_tokens }} out tokens{% if extraction.output.usage.request_id %}, request {{ extraction.output.usage.request_id }}{% endif %}.</p>{% endif %}
+  {% endif %}
+  {% if llm_ok and not locked and not busy %}
+  <form method="post" action="/builds/{{ job.id }}/extract" class="inline needs-actor">
+    <input type="hidden" name="actor">
+    <button class="secondary">{{ 'Re-read' if extraction else 'Read' }} dimensions with Claude</button>
+    <span class="small muted">Replaces the working spec below with a fresh draft.</span>
+  </form>
+  {% endif %}
+</section>
+
+{# ----------------------------------------------------------------- spec #}
+<section class="card">
+  <h2>2. Dimensions the model must meet
+    {% if confirmed %}<span class="pill approved">confirmed</span>{% else %}<span class="pill needs_info">not confirmed</span>{% endif %}</h2>
+  <p class="muted small">Coordinates in mm from the part's minimum corner: X right, Y back, Z up. Every row is measured on the generated model; it must land within 0.01 mm of nominal. Tolerances are kept for DFM and quoting.</p>
+  {% if spec.open_questions %}
+  <ul class="questions">
+    {% for q in spec.open_questions %}<li><span class="sev {{ 'critical' if q.blocking else 'info' }}">{{ 'blocking' if q.blocking else 'check' }}</span> <span class="tag">ask {{ q.ask }}</span> {{ q.question }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if issues %}
+  <div class="banner warn small"><strong>Before confirming:</strong><ul class="blockers">{% for i in issues %}<li>{{ i }}</li>{% endfor %}</ul></div>
+  {% endif %}
+
+  <form method="post" action="/builds/{{ job.id }}/spec" class="needs-actor">
+    <input type="hidden" name="actor">
+    <div class="grid">
+      <label>Part name<input name="part_name" value="{{ spec.part_name or '' }}" {% if locked %}disabled{% endif %}></label>
+      <label>Scale basis
+        <select name="scale_basis" {% if locked %}disabled{% endif %}>
+          {% for v in ['dimensioned', 'reference_object', 'none'] %}<option value="{{ v }}" {% if spec.scale_basis == v %}selected{% endif %}>{{ v.replace('_', ' ') }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="span2">Shape description (for the planner)<input name="description" value="{{ spec.description }}" {% if locked %}disabled{% endif %}></label>
+      <label>General tolerance ± (mm)<input name="general_tolerance_mm" value="{{ spec.general_tolerance_mm if spec.general_tolerance_mm is not none else '' }}" {% if locked %}disabled{% endif %}></label>
+      <label>Material on drawing<input name="material_text" value="{{ spec.material_text or '' }}" {% if locked %}disabled{% endif %}></label>
+      <label>Finish on drawing<input name="finish_text" value="{{ spec.finish_text or '' }}" {% if locked %}disabled{% endif %}></label>
+    </div>
+    <div class="scroll">
+    <table class="spec">
+      <thead><tr><th>ID</th><th>As written</th><th>Kind</th><th class="num">Nominal</th><th class="num">+tol</th><th class="num">−tol</th>
+        <th class="num">at X</th><th class="num">at Y</th><th class="num">at Z</th><th>Axis</th><th>Dir</th><th class="num">Ø ref</th><th>Thru</th><th>Conf.</th><th>Del</th></tr></thead>
+      <tbody>
+      {% set rows = spec.dimensions|list %}
+      {% for i in range(rows|length + (0 if locked else 3)) %}
+        {% set d = rows[i] if i < rows|length else none %}
+        <tr class="{{ 'lowconf' if d and d.confidence < 0.8 else '' }}" title="{{ kind_help[d.kind] if d else 'New row: fill ID and kind' }}{% if d and d.note %} — {{ d.note }}{% endif %}">
+          <td><input name="d-{{ i }}-id" value="{{ d.id if d else '' }}" size="3" {% if locked %}disabled{% endif %}></td>
+          <td><input name="d-{{ i }}-label" value="{{ d.label if d else '' }}" size="10" {% if locked %}disabled{% endif %}></td>
+          <td><select name="d-{{ i }}-kind" {% if locked %}disabled{% endif %}>{% for k in kinds %}<option value="{{ k }}" {% if d and d.kind == k %}selected{% endif %}>{{ k }}</option>{% endfor %}</select></td>
+          <td><input class="n" name="d-{{ i }}-nominal" value="{{ d.nominal if d and d.nominal is not none else '' }}" {% if locked %}disabled{% endif %}></td>
+          <td><input class="n" name="d-{{ i }}-tol_plus" value="{{ d.tol_plus if d and d.tol_plus is not none else '' }}" {% if locked %}disabled{% endif %}></td>
+          <td><input class="n" name="d-{{ i }}-tol_minus" value="{{ d.tol_minus if d and d.tol_minus is not none else '' }}" {% if locked %}disabled{% endif %}></td>
+          <td><input class="n" name="d-{{ i }}-x" value="{{ d.at.x if d and d.at else '' }}" {% if locked %}disabled{% endif %}></td>
+          <td><input class="n" name="d-{{ i }}-y" value="{{ d.at.y if d and d.at else '' }}" {% if locked %}disabled{% endif %}></td>
+          <td><input class="n" name="d-{{ i }}-z" value="{{ d.at.z if d and d.at else '' }}" {% if locked %}disabled{% endif %}></td>
+          <td><select name="d-{{ i }}-axis" {% if locked %}disabled{% endif %}><option value=""></option>{% for a in ['x','y','z'] %}<option {% if d and d.axis == a %}selected{% endif %}>{{ a }}</option>{% endfor %}</select></td>
+          <td><select name="d-{{ i }}-direction" {% if locked %}disabled{% endif %}><option value=""></option>{% for a in ['-z','+z','-x','+x','-y','+y'] %}<option {% if d and d.direction == a %}selected{% endif %}>{{ a }}</option>{% endfor %}</select></td>
+          <td><input class="n" name="d-{{ i }}-feature_diameter" value="{{ d.feature_diameter if d and d.feature_diameter is not none else '' }}" {% if locked %}disabled{% endif %}></td>
+          <td><input type="checkbox" name="d-{{ i }}-through" value="1" {% if d and d.through %}checked{% endif %} {% if locked %}disabled{% endif %}></td>
+          <td class="small">{% if d %}{{ '%.0f'|format(d.confidence * 100) }}%<input type="hidden" name="d-{{ i }}-confidence" value="{{ d.confidence }}"><input type="hidden" name="d-{{ i }}-source" value="{{ d.source }}"><input type="hidden" name="d-{{ i }}-note" value="{{ d.note or '' }}">{% endif %}</td>
+          <td>{% if d %}<input type="checkbox" name="d-{{ i }}-delete" value="1" {% if locked %}disabled{% endif %}>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% if spec.open_questions and not locked %}
+    <fieldset><legend>Mark questions resolved (removed on save)</legend>
+      {% for q in spec.open_questions %}<label class="check"><input type="checkbox" name="resolve" value="{{ q.id }}"> {{ q.id }}</label>{% endfor %}
+    </fieldset>
+    {% endif %}
+    {% if not locked and not busy %}<p><button class="secondary">Save dimensions</button> <span class="small muted">Hover a row for what its kind measures.</span></p>{% endif %}
+  </form>
+
+  {% if not locked and not busy %}
+  <form method="post" action="/builds/{{ job.id }}/confirm" class="inline needs-actor">
+    <input type="hidden" name="actor">
+    <button {% if issues %}disabled{% endif %}>Confirm these dimensions</button>
+    <span class="small muted">Generation verifies against the confirmed set. Editing after confirming requires confirming again.</span>
+  </form>
+  {% endif %}
+  <details><summary class="small">Edit as JSON</summary>
+    <form method="post" action="/builds/{{ job.id }}/spec-json" class="needs-actor">
+      <input type="hidden" name="actor">
+      <textarea name="raw" rows="16" class="mono" {% if locked %}disabled{% endif %}>{{ spec.model_dump_json(indent=2) }}</textarea>
+      {% if not locked and not busy %}<button class="secondary">Save JSON</button>{% endif %}
+    </form>
+  </details>
+</section>
+
+{# ------------------------------------------------------------- generate #}
+<section class="card">
+  <h2>3. Generate and verify</h2>
+  {% if not confirmed %}<p class="muted">Confirm the dimensions first.</p>
+  {% elif locked %}<p class="muted">The model is accepted.</p>
+  {% else %}
+  <form method="post" action="/builds/{{ job.id }}/generate" class="inline needs-actor">
+    <input type="hidden" name="actor">
+    <label class="check">Attempts <input name="max_attempts" value="3" size="2"></label>
+    <button {% if busy %}disabled{% endif %}>Generate with Claude</button>
+    <span class="small muted">Each failed attempt's measured errors are sent back to the planner for the next one.</span>
+  </form>
+  <details {% if not llm_ok %}open{% endif %}><summary>Or paste a build plan (JSON)</summary>
+    <p class="small muted">Stock: box / cylinder / extrusion. Operations: hole, pocket, boss, cut_box. The plan below is the latest attempt's, or a starting skeleton.</p>
+    <form method="post" action="/builds/{{ job.id }}/plan" class="needs-actor">
+      <input type="hidden" name="actor">
+      <textarea name="raw" rows="14" class="mono">{{ example_plan }}</textarea>
+      <button class="secondary" {% if busy %}disabled{% endif %}>Build and verify this plan</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+
+{# ------------------------------------------------------------- attempts #}
+{% for a in attempts %}
+<section class="card attempt {{ 'pass' if a.passed else 'fail' }}">
+  <details {% if loop.first %}open{% endif %}>
+  <summary><h2 style="display:inline">Attempt {{ a.attempt }}</h2>
+    <span class="pill {{ 'approved' if a.passed else 'rejected' }}">{{ 'verified' if a.passed else 'failed' }}</span>
+    <span class="tag">{{ a.source }}</span>
+    {% if a.report %}<span class="small muted">{{ a.report.dimensions|selectattr('passed')|list|length }}/{{ a.report.dimensions|length }} dimensions pass</span>{% endif %}
+    {% if a.llm_usage %}<span class="small muted"> · {{ a.llm_usage.input_tokens }} in / {{ a.llm_usage.output_tokens }} out tokens</span>{% endif %}
+  </summary>
+
+  {% if a.plan_error %}<div class="banner err small">{{ a.plan_error }}</div>{% endif %}
+  {% if a.build_error %}<div class="banner err small">Build error: {{ a.build_error }}</div>{% endif %}
+  {% if a.feedback_used %}<details><summary class="small">Feedback this attempt was given ({{ a.feedback_used|length }})</summary><ul class="small">{% for f in a.feedback_used %}<li>{{ f }}</li>{% endfor %}</ul></details>{% endif %}
+
+  <div class="attempt-grid">
+    {% if 'stl' in a.files %}
+    <div>
+      <div class="viewer" data-stl="/builds/{{ job.id }}/attempts/{{ a.attempt }}/stl" data-state="{{ 'ok' if a.passed else 'failed' }}"></div>
+      {% if not a.passed %}<p class="small err-text">Failed verification. Preview only; no STEP or drawing is issued.</p>{% endif %}
+    </div>
+    {% endif %}
+    {% if 'svg' in a.files %}
+    <div><a href="/builds/{{ job.id }}/attempts/{{ a.attempt }}/pdf" target="_blank"><img class="sheet" src="/builds/{{ job.id }}/attempts/{{ a.attempt }}/svg" alt="Drawing"></a></div>
+    {% endif %}
+  </div>
+  {% if a.passed %}
+  <p><a href="/builds/{{ job.id }}/attempts/{{ a.attempt }}/step?download=1">Download STEP</a> ·
+     <a href="/builds/{{ job.id }}/attempts/{{ a.attempt }}/pdf?download=1">Download drawing PDF</a></p>
+  {% endif %}
+
+  {% if a.report %}
+  <h3>Dimensions</h3>
+  <table class="checks">
+    <thead><tr><th>ID</th><th>As written</th><th>Kind</th><th class="num">Expected</th><th class="num">Measured</th><th>Result</th></tr></thead>
+    {% for c in a.report.dimensions %}
+    <tr class="{{ 'ok' if c.passed else 'bad' }}" title="{{ c.method }}">
+      <td>{{ c.dim_id }}</td><td>{{ c.label }}</td><td class="small">{{ c.kind }}</td>
+      <td class="num">{{ c.expected }}</td><td class="num">{{ c.measured or '—' }}</td>
+      <td>{% if c.passed %}<span class="sev info">pass</span>{% else %}<span class="sev critical">fail</span> <span class="small">{{ c.method }}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <h3>Solid and features</h3>
+  <ul class="plain small">
+    {% for v in a.report.validity + a.report.features %}<li><span class="sev {{ 'info' if v.passed else 'critical' }}">{{ 'ok' if v.passed else 'fail' }}</span> {{ v.name.replace('_', ' ') }}: {{ v.detail }}</li>{% endfor %}
+  </ul>
+  {% if a.report.coverage %}
+  <h3>Check by eye</h3>
+  <ul class="small">{% for n in a.report.coverage %}<li>{{ n.message }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% endif %}
+  {% if a.plan %}<details><summary class="small">Build plan</summary><pre class="mono small">{{ a.plan.model_dump_json(indent=2) }}</pre></details>{% endif %}
+  </details>
+</section>
+{% endfor %}
+
+{# --------------------------------------------------------- sign-off #}
+<section class="card">
+  <h2>4. Sign-off</h2>
+  {% if job.status == 'accepted' and accepted %}
+    {% set pkg = job.packages|sort(attribute='created_at')|last %}
+    <p>Attempt {{ accepted.attempt }} accepted by <strong>{{ pkg.approved_by }}</strong> on {{ pkg.created_at.strftime('%Y-%m-%d %H:%M') }}. STEP, drawing, spec and verification are frozen in the package.</p>
+    <form method="post" action="/builds/{{ job.id }}/to-quote" class="inline needs-actor">
+      <input type="hidden" name="actor">
+      <button>Send to check + quote</button>
+      <span class="small muted">Creates a quote job with the STEP and drawing, and runs DFM and pricing.</span>
+    </form>
+  {% elif latest and latest.passed %}
+    <form method="post" action="/builds/{{ job.id }}/accept" class="inline needs-actor">
+      <input type="hidden" name="actor">
+      <input name="note" placeholder="Note (optional)">
+      <button>Accept attempt {{ latest.attempt }}</button>
+      <span class="small muted">Look at the 3D view and drawing first: verification checks the confirmed dimensions, not intent.</span>
+    </form>
+  {% else %}
+    <p class="muted">Nothing to accept yet: the latest attempt must pass verification.</p>
+  {% endif %}
+  {% if children %}
+  <h3>Quote jobs from this build</h3>
+  <ul>{% for c in children %}<li><a href="/jobs/{{ c.id }}">{{ c.title }}</a> <span class="pill {{ c.status }}">{{ c.status.replace('_', ' ') }}</span> <span class="muted small">{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}</span></li>{% endfor %}</ul>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Trail</h2>
+  <table>
+    <thead><tr><th>At</th><th>Who</th><th>Action</th><th>Target</th><th>Note</th></tr></thead>
+    {% for e in job.events|reverse %}
+    <tr><td class="muted small">{{ e.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td class="mono small">{{ e.target }}</td><td class="small">{{ e.note or '' }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">No decisions yet.</td></tr>{% endfor %}
+  </table>
+</section>
+
+<section class="card danger-zone">
+  <h2>Delete build job</h2>
+  <p class="muted">Removes the inputs, every attempt's files and the trail. Quote jobs made from it keep their own copies.</p>
+  <form method="post" action="/jobs/{{ job.id }}/delete" class="inline">
+    <input name="confirm" placeholder="Type DELETE">
+    <button class="danger">Delete permanently</button>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/reviewer.js"></script>
+{% include "_viewer.html" %}
+{% endblock %}

@@ -11,7 +11,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
@@ -41,7 +41,12 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_id)
     shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), index=True)
     title: Mapped[str] = mapped_column(String)
-    # needs_info | in_review | approved | rejected | error
+    # quote: Phase 1 check + quote. build: Phase 2 model generation.
+    kind: Mapped[str] = mapped_column(String, default="quote", server_default="quote", index=True)
+    # A quote job made from a build job points back at it.
+    parent_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # quote: needs_info | in_review | approved | rejected | error
+    # build: needs_spec | extracting | spec_review | ready | generating | model_review | failed | accepted
     status: Mapped[str] = mapped_column(String, default="needs_info")
     spec: Mapped[dict] = mapped_column(JSON)
     current_run: Mapped[int] = mapped_column(Integer, default=0)
@@ -114,7 +119,25 @@ def make_engine(url: str | None = None):
         os.makedirs(os.path.dirname(url.removeprefix("sqlite:///")) or ".", exist_ok=True)
     engine = create_engine(url, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {})
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(engine) -> None:
+    """Tiny forward-only migration for databases created before a column existed."""
+    insp = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            ddl = f'ALTER TABLE {table.name} ADD COLUMN {col.name} {col.type.compile(engine.dialect)}'
+            if col.server_default is not None:
+                ddl += f" DEFAULT '{col.server_default.arg}'"
+            with engine.begin() as conn:
+                conn.execute(text(ddl))
 
 
 def make_sessionmaker(engine):

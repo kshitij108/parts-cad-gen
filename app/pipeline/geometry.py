@@ -147,7 +147,7 @@ def _canonical_dir(d: gp_Dir) -> tuple[float, float, float]:
 # --------------------------------------------------------------------------
 
 
-def _concave_cylinders(shape) -> tuple[list[HoleCandidate], list[ConcaveRadius]]:
+def concave_cylinders(shape) -> tuple[list[HoleCandidate], list[ConcaveRadius]]:
     """Group concave cylindrical faces by (axis line, radius).
 
     A group whose angular spans add to a full turn is a hole candidate (CAD
@@ -313,7 +313,7 @@ def summarize_shape(shape: TopoDS_Shape) -> GeometrySummary:
     lo, hi = box.CornerMin(), box.CornerMax()  # Get() is unbound in OCP 8
 
     counts = Counter(_SURFACE_NAMES.get(BRepAdaptor_Surface(f).GetType(), "other") for f in _faces(shape))
-    holes, radii = _concave_cylinders(shape)
+    holes, radii = concave_cylinders(shape)
     sharp = [e for s in solids for e in _sharp_internal_edges(s)]
 
     warnings.append("Bounding box is axis-aligned in the file's coordinates; stock may be smaller if the part is rotated.")

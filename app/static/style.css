@@ -67,3 +67,29 @@ td.decide { min-width: 320px; }
   table.lines, table.lines tbody, table.lines tr, table.lines td { display: block; width: 100%; }
   table.lines thead { display: none; } td.decide { min-width: 0; }
 }
+
+/* ---- Phase 2: build jobs ---- */
+.banner.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.needs_spec, .pill.failed { background: var(--crit-bg); color: var(--crit); }
+.pill.extracting, .pill.generating, .pill.spec_review, .pill.model_review { background: var(--warn-bg); color: var(--warn); }
+.pill.ready { background: var(--info-bg); color: var(--info); }
+.pill.accepted { background: var(--ok-bg); color: var(--ok); }
+.thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+.thumb { display: flex; align-items: center; justify-content: center; width: 180px; height: 130px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg); text-align: center; text-decoration: none; }
+.thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.scroll { overflow-x: auto; margin: 8px 0; }
+table.spec td { padding: 3px 3px; }
+table.spec input, table.spec select { font-size: 13px; padding: 3px 4px; }
+table.spec input.n { width: 64px; text-align: right; }
+tr.lowconf td { background: var(--warn-bg); }
+.viewer { width: 100%; height: 360px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+.attempt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0; }
+img.sheet { width: 100%; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.err-text { color: var(--crit); }
+table.checks tr.bad td { background: var(--crit-bg); }
+.attempt.fail { border-left: 3px solid var(--crit); }
+.attempt.pass { border-left: 3px solid var(--ok); }
+.attempt summary { cursor: pointer; list-style-position: outside; }
+pre.mono { white-space: pre-wrap; background: var(--bg); padding: 8px; border-radius: 6px; max-height: 360px; overflow: auto; }
+details > summary { cursor: pointer; margin: 6px 0; }
+@media (max-width: 720px) { .attempt-grid { grid-template-columns: 1fr; } }
