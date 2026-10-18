@@ -133,36 +133,65 @@ def run(inp: DfmInput) -> DfmReport:
             suggested_fix=f"Increase internal radii to ≥ R{min_r:.2f} mm (larger is faster and cheaper).",
             evidence=[Evidence(source="geometry", ref="geometry.concave_radii", detail=f"{len(small)} faces")],
         ))
-    vertical = [e for e in g.sharp_internal_edges if _parallel(e.direction, axis)]
-    if vertical:
+    # Geometry classifies an edge when it can (open only along its own axis = wall-wall corner);
+    # unclassified edges fall back to "parallel to the assumed tool axis".
+    edges = g.sharp_internal_edges
+    known = [e for e in edges if e.needs_radius is not None]
+    by_reach = [e for e in known if e.needs_radius]
+    by_axis = [e for e in edges if e.needs_radius is None and _parallel(e.direction, axis)]
+    need = by_reach + by_axis
+    if need:
+        why = []
+        if by_reach:
+            why.append(f"{len(by_reach)} can only be reached along their own axis (wall-to-wall corners)")
+        if by_axis:
+            why.append(f"{len(by_axis)} run parallel to the assumed tool axis ({axis_why})")
         flags.append(DfmFlag(
             id="sharp_internal_corner", rule="internal_corners", severity="critical",
-            title=f"{len(vertical)} sharp internal corners along the tool axis",
-            measured=f"{len(vertical)} edges with zero radius, longest {max(e.length_mm for e in vertical):.1f} mm",
+            title=f"{len(need)} sharp internal corners a rotating tool can't cut",
+            measured=f"{len(need)} edges with zero radius, longest {max(e.length_mm for e in need):.1f} mm",
             threshold="corner radius ≥ tool radius",
-            reason=f"A rotating end mill leaves a radius in corners parallel to its axis, so these can't be cut sharp. Tool axis assumed: {axis_why}.",
+            reason="A rotating end mill leaves a radius in corners parallel to its axis, so these can't be cut sharp: " + "; ".join(why) + ".",
             suggested_fix=f"Add a corner radius (≥ R{min_r:.2f} mm; ideally ≥ 1/3 of pocket depth), use dog-bone reliefs, or quote wire EDM.",
-            evidence=[Evidence(source="geometry", ref="geometry.sharp_internal_edges", detail=f"{len(vertical)} of {len(g.sharp_internal_edges)} edges parallel to ({axis.x:g}, {axis.y:g}, {axis.z:g})")],
+            evidence=[Evidence(source="geometry", ref="geometry.sharp_internal_edges",
+                               detail=f"{len(need)} of {len(edges)} sharp edges ({len(known)} classified by reachability)")],
+        ))
+    unreachable = [e for e in known if e.reachable is False]
+    if unreachable:
+        flags.append(DfmFlag(
+            id="unreachable_internal_edge", rule="unreachable_edges", severity="warn",
+            title=f"{len(unreachable)} internal edges no tool direction reaches",
+            measured=f"{len(unreachable)} edges, longest {max(e.length_mm for e in unreachable):.1f} mm",
+            threshold="reachable from outside the part along a straight tool path",
+            reason="No straight path from outside the part reaches these edges, so a 3-axis mill can't cut them as modelled.",
+            suggested_fix="Open the feature to a face the tool can reach, split the part, or quote EDM / 5-axis work.",
+            evidence=[Evidence(source="geometry", ref="geometry.sharp_internal_edges[reachable=false]", detail=f"{len(unreachable)} edges")],
         ))
 
     # --- Tolerances ------------------------------------------------------
     band, ev = tightest_tolerance(inp.drawing, spec)
     if band is None:
         skipped["tight_tolerances"] = "No tolerance read from a drawing or entered by the shop."
-    elif rc.machines:
+    elif not fits:
+        # Capability only means something on a machine that can hold the part.
+        skipped["tight_tolerances"] = "No machine on the rate card fits the part (see machine_envelope), so capability can't be judged."
+    else:
         run_.append("tight_tolerances")
-        best = min(m.best_tolerance_mm for m in rc.machines)
-        std = min(m.standard_tolerance_mm for m in rc.machines)
+        best_m = min(fits, key=lambda m: m.best_tolerance_mm)
+        std_m = min(fits, key=lambda m: m.standard_tolerance_mm)
+        best, std = best_m.best_tolerance_mm, std_m.standard_tolerance_mm
         if band < std:
             sev = "critical" if band < best else "info"
             flags.append(DfmFlag(
                 id="tight_tolerance", rule="tight_tolerances", severity=sev,
                 title="Tolerance tighter than standard capability" + (" and beyond best capability" if band < best else ""),
                 measured=f"{band:.3f} mm band",
-                threshold=f"standard {std:.3f} mm, best {best:.3f} mm",
+                threshold=f"standard {std:.3f} mm ({std_m.name}), best {best:.3f} mm ({best_m.name}); machines the part fits",
                 reason="Tighter than standard means slower finishing passes and more inspection; beyond best capability the shop can't commit to it.",
                 suggested_fix="Ask whether the tolerance is functional; loosen it where it isn't, or quote grinding/outside inspection.",
-                evidence=[ev, Evidence(source="rate_card", ref="rate_card.machines[*].standard_tolerance_mm", detail=f"{std} mm")],
+                evidence=[ev,
+                          Evidence(source="rate_card", ref=f"rate_card.machines[{std_m.id}].standard_tolerance_mm", detail=f"{std} mm"),
+                          Evidence(source="rate_card", ref=f"rate_card.machines[{best_m.id}].best_tolerance_mm", detail=f"{best} mm")],
             ))
 
     rank = {"critical": 0, "warn": 1, "info": 2}

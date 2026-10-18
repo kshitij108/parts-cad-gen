@@ -27,6 +27,9 @@ class WireStock(BaseModel):
     size_x: float = Field(description="box: length along X. 0 if not a box.")
     size_y: float = Field(description="box: width along Y. 0 if not a box.")
     size_z: float = Field(description="box: height along Z. 0 if not a box.")
+    origin: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0], description=(
+        "box/cylinder: [x, y, z] where the stock's minimum corner sits. [0, 0, 0] unless material extends below or "
+        "left of the stock (e.g. a spigot under a plate: origin z = spigot height). [0, 0, 0] for extrusions."))
     corner_radius: float = Field(description="box: radius on the four vertical edges. 0 = sharp.")
     diameter: float = Field(description="cylinder: diameter (axis along Z at (d/2, d/2)). 0 if not a cylinder.")
     height: float = Field(description="cylinder: height along Z. 0 if not a cylinder.")
@@ -46,14 +49,17 @@ class WireOp(BaseModel):
     positions: list[list[float]] = Field(description="hole: entry points [[x, y, z], ...] on the face drilled from. [] when using bolt_circle or not a hole.")
     bolt_circle: list[float] = Field(description="hole: [centre_x, centre_y, centre_z, pitch_diameter, count, start_angle_deg], or [] if not used.")
     diameter: float = Field(description="hole diameter, or cylinder boss diameter. 0 otherwise.")
-    depth: float = Field(description="hole/pocket depth from the entry face. 0 = through all.")
+    depth: float = Field(description="hole/pocket: depth from the entry face when through is false; 0 when through is true or not used.")
+    through: bool = Field(description="hole/pocket: true = through all (depth must be 0); false = blind (depth > 0). false for boss and cut_box.")
     counterbore_diameter: float = Field(description="hole: counterbore diameter. 0 = no counterbore.")
     counterbore_depth: float = Field(description="hole: counterbore depth. 0 = no counterbore.")
     center: list[float] = Field(description="pocket: centre of the opening on the entry face; boss: centre of its footprint. [x, y, z], or [] otherwise.")
     length: float = Field(description="pocket / box boss: size along the first in-plane axis (x for ±z, y for ±x, x for ±y). 0 otherwise.")
     width: float = Field(description="pocket / box boss: size along the second in-plane axis (y for ±z, z for ±x and ±y). 0 otherwise.")
     corner_radius: float = Field(description="pocket: radius of corners parallel to the direction (width/2 = obround slot); cut_box: radius on edges parallel to corner_axis. 0 = sharp.")
-    angle_deg: float = Field(description="pocket: rotation about the cutting axis. 0 = none.")
+    angle_deg: float = Field(description=(
+        "pocket: rotation about the cutting axis; 0 = none. Positive turns the pocket's length axis from +u toward +v of "
+        "its entry plane ((x, y) for ±z, (y, z) for ±x, (x, z) for ±y), the same convention as bolt-circle start angles."))
     shape: Literal["cylinder", "box", "none"] = Field(description="boss shape. none for other operations.")
     height: float = Field(description="boss height. 0 otherwise.")
     corner_min: list[float] = Field(description="cut_box: minimum corner [x, y, z] of the region removed. [] otherwise.")
@@ -77,13 +83,28 @@ def _opt(v: float) -> float | None:
     return v if v else None
 
 
+def _depth(o: "WireOp") -> float | None:
+    """None = through all. Through and depth must agree, so a forgotten depth can't become THRU."""
+    if o.through:
+        if o.depth:
+            raise PlanInvalid(f"{o.id}: through=true but depth {o.depth:g} given; use depth 0 for through, or through=false.")
+        return None
+    if o.depth <= 0:
+        raise PlanInvalid(f"{o.id}: a blind {o.op} needs a positive depth (or through=true).")
+    return o.depth
+
+
 def to_plan(w: WirePlan) -> BuildPlan:
     s = w.stock
+    origin = _xyz(s.origin, "stock origin") if s.origin else {"x": 0.0, "y": 0.0, "z": 0.0}
     if s.kind == "box":
-        stock = {"kind": "box", "size": {"x": s.size_x, "y": s.size_y, "z": s.size_z}, "corner_radius": _opt(s.corner_radius)}
+        stock = {"kind": "box", "size": {"x": s.size_x, "y": s.size_y, "z": s.size_z}, "corner_radius": _opt(s.corner_radius),
+                 "origin": origin}
     elif s.kind == "cylinder":
-        stock = {"kind": "cylinder", "diameter": s.diameter, "height": s.height}
+        stock = {"kind": "cylinder", "diameter": s.diameter, "height": s.height, "origin": origin}
     else:
+        if any(origin.values()):
+            raise PlanInvalid("stock origin applies to box and cylinder stock; extrusion points are already absolute.")
         if s.plane == "none":
             raise PlanInvalid("extrusion stock needs a plane (xy, xz or yz).")
         bad = [p for p in s.points if len(p) != 2]
@@ -98,6 +119,8 @@ def to_plan(w: WirePlan) -> BuildPlan:
         base = {"op": o.op, "id": o.id, "dims": o.dims}
         if o.op in ("hole", "pocket", "boss") and o.direction == "none":
             raise PlanInvalid(f"{o.id}: {o.op} needs a direction.")
+        if o.through and o.op not in ("hole", "pocket"):
+            raise PlanInvalid(f"{o.id}: through only applies to holes and pockets; set it false for a {o.op}.")
         if o.op == "hole":
             bc = None
             if o.bolt_circle:
@@ -105,13 +128,17 @@ def to_plan(w: WirePlan) -> BuildPlan:
                     raise PlanInvalid(f"{o.id}: bolt_circle must be [cx, cy, cz, pitch_diameter, count, start_angle_deg].")
                 cx, cy, cz, pcd, n, start = o.bolt_circle
                 bc = {"center": {"x": cx, "y": cy, "z": cz}, "diameter": pcd, "count": int(n), "start_angle_deg": start}
+            if o.positions and o.bolt_circle:
+                raise PlanInvalid(f"{o.id}: give positions or a bolt_circle, not both (use two hole operations for both).")
+            if not o.positions and not o.bolt_circle:
+                raise PlanInvalid(f"{o.id}: a hole needs positions or a bolt_circle.")
             ops.append({**base, "diameter": o.diameter, "direction": o.direction,
                         "positions": [_xyz(p, f"{o.id} position") for p in o.positions], "bolt_circle": bc,
-                        "depth": _opt(o.depth), "counterbore_diameter": _opt(o.counterbore_diameter),
+                        "depth": _depth(o), "counterbore_diameter": _opt(o.counterbore_diameter),
                         "counterbore_depth": _opt(o.counterbore_depth)})
         elif o.op == "pocket":
             ops.append({**base, "center": _xyz(o.center, f"{o.id} center"), "direction": o.direction, "length": o.length,
-                        "width": o.width, "depth": _opt(o.depth), "corner_radius": _opt(o.corner_radius),
+                        "width": o.width, "depth": _depth(o), "corner_radius": _opt(o.corner_radius),
                         "angle_deg": _opt(o.angle_deg)})
         elif o.op == "boss":
             if o.shape == "none":
@@ -119,6 +146,8 @@ def to_plan(w: WirePlan) -> BuildPlan:
             ops.append({**base, "shape": o.shape, "base_center": _xyz(o.center, f"{o.id} center"), "direction": o.direction,
                         "height": o.height, "diameter": _opt(o.diameter), "length": _opt(o.length), "width": _opt(o.width)})
         else:
+            if o.corner_radius and o.corner_axis == "none":
+                raise PlanInvalid(f"{o.id}: corner_radius needs corner_axis (the axis of the edges it rounds).")
             ops.append({**base, "corner_min": _xyz(o.corner_min, f"{o.id} corner_min"),
                         "corner_max": _xyz(o.corner_max, f"{o.id} corner_max"), "corner_radius": _opt(o.corner_radius),
                         "corner_axis": None if o.corner_axis == "none" else o.corner_axis})
@@ -131,7 +160,9 @@ def to_plan(w: WirePlan) -> BuildPlan:
 def from_plan(p: BuildPlan) -> WirePlan:
     """The inverse, so a retry shows the planner its previous plan in the format it writes."""
     s = p.stock
-    stock = dict(kind=s.kind, size_x=0, size_y=0, size_z=0, corner_radius=0, diameter=0, height=0, plane="none",
+    org = getattr(s, "origin", None)
+    stock = dict(kind=s.kind, size_x=0, size_y=0, size_z=0, origin=[org.x, org.y, org.z] if org else [0.0, 0.0, 0.0],
+                 corner_radius=0, diameter=0, height=0, plane="none",
                  points=[], depth=0, concave_corner_radius=0, convex_corner_radius=0)
     if s.kind == "box":
         stock.update(size_x=s.size.x, size_y=s.size.y, size_z=s.size.z, corner_radius=s.corner_radius or 0)
@@ -143,16 +174,17 @@ def from_plan(p: BuildPlan) -> WirePlan:
     ops = []
     for o in p.operations:
         w = dict(op=o.op, id=o.id, dims=o.dims, direction="none", positions=[], bolt_circle=[], diameter=0, depth=0,
-                 counterbore_diameter=0, counterbore_depth=0, center=[], length=0, width=0, corner_radius=0, angle_deg=0,
+                 through=False, counterbore_diameter=0, counterbore_depth=0, center=[], length=0, width=0, corner_radius=0, angle_deg=0,
                  shape="none", height=0, corner_min=[], corner_max=[], corner_axis="none")
         if o.op == "hole":
             bc = o.bolt_circle
             w.update(direction=o.direction, positions=[[q.x, q.y, q.z] for q in o.positions], diameter=o.diameter,
                      bolt_circle=[bc.center.x, bc.center.y, bc.center.z, bc.diameter, bc.count, bc.start_angle_deg] if bc else [],
-                     depth=o.depth or 0, counterbore_diameter=o.counterbore_diameter or 0, counterbore_depth=o.counterbore_depth or 0)
+                     depth=o.depth or 0, through=o.depth is None,
+                     counterbore_diameter=o.counterbore_diameter or 0, counterbore_depth=o.counterbore_depth or 0)
         elif o.op == "pocket":
             w.update(direction=o.direction, center=[o.center.x, o.center.y, o.center.z], length=o.length, width=o.width,
-                     depth=o.depth or 0, corner_radius=o.corner_radius or 0, angle_deg=o.angle_deg or 0)
+                     depth=o.depth or 0, through=o.depth is None, corner_radius=o.corner_radius or 0, angle_deg=o.angle_deg or 0)
         elif o.op == "boss":
             w.update(direction=o.direction, center=[o.base_center.x, o.base_center.y, o.base_center.z], shape=o.shape,
                      height=o.height, diameter=o.diameter or 0, length=o.length or 0, width=o.width or 0)

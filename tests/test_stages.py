@@ -1,5 +1,5 @@
 from app.pipeline import dfm, drawing, geometry, intake, quote
-from app.schemas import DfmInput, IntakeInput, JobSpec, QuoteInput, UploadedFile
+from app.schemas import DfmInput, IntakeInput, JobSpec, QuoteInput, UploadedFile, Vec3
 
 
 def _intake(tmp_path, spec, rate_card, names=("part.step",)):
@@ -90,3 +90,44 @@ def test_minimum_order_top_up(step_dir, rate_card):
     qq = q.quantities[0]
     assert any(l.category == "minimum" for l in qq.lines)
     assert qq.total_low == 100000
+
+
+def _machines(rate_card, *updates):
+    base = rate_card.machines[0]
+    return [base.model_copy(update=u) for u in updates]
+
+
+def test_tolerance_capability_only_counts_machines_the_part_fits(step_dir, rate_card):
+    """Audit P5: a precise machine the 100 x 60 x 20 part can't fit must not make 0.01 mm look achievable."""
+    rate_card.machines = _machines(
+        rate_card,
+        {"id": "tiny-precise", "envelope_mm": Vec3(x=50, y=50, z=50), "best_tolerance_mm": 0.005, "standard_tolerance_mm": 0.02},
+        {"id": "big-coarse", "envelope_mm": Vec3(x=1000, y=500, z=500), "best_tolerance_mm": 0.05, "standard_tolerance_mm": 0.1},
+    )
+    _, rep, _ = _pipeline(step_dir, rate_card, JobSpec(material_id="al6061", quantities=[1], tightest_tolerance_mm=0.01))
+    f = next(f for f in rep.flags if f.rule == "tight_tolerances")
+    assert f.severity == "critical"
+    assert any("big-coarse" in e.ref for e in f.evidence) and not any("tiny-precise" in e.ref for e in f.evidence)
+
+
+def test_tolerance_check_is_skipped_when_no_machine_fits(step_dir, rate_card):
+    rate_card.machines = _machines(rate_card, {"id": "tiny", "envelope_mm": Vec3(x=50, y=50, z=50)})
+    _, rep, _ = _pipeline(step_dir, rate_card, JobSpec(material_id="al6061", quantities=[1], tightest_tolerance_mm=0.01))
+    assert "tight_tolerances" in rep.checks_skipped
+    assert any(f.rule == "machine_envelope" for f in rep.flags)
+
+
+def test_sharp_corners_judged_per_edge_when_geometry_classifies_them(step_dir, rate_card):
+    """Audit P4: with most holes along X, the top pocket's vertical corners must still be flagged."""
+    g = geometry.run(step_dir / "bracket.step")
+    side = g.hole_candidates[0].model_copy(update={"axis": Vec3(x=1, y=0, z=0)})
+    g = g.model_copy(update={"hole_candidates": [side, side, side]})
+    edges = [e.model_copy(update={"needs_radius": abs(e.direction.z) > 0.999, "reachable": True}) for e in g.sharp_internal_edges]
+    floor = next(i for i, e in enumerate(edges) if abs(e.direction.z) < 0.5)
+    edges[floor] = edges[floor].model_copy(update={"needs_radius": False, "reachable": False})
+    g = g.model_copy(update={"sharp_internal_edges": edges})
+    rep = dfm.run(DfmInput(geometry=g, drawing=drawing.run(None), spec=JobSpec(material_id="al6061"), rate_card=rate_card))
+    sharp = next(f for f in rep.flags if f.id == "sharp_internal_corner")
+    assert sharp.severity == "critical" and sharp.title.startswith("4 ")
+    unreachable = next(f for f in rep.flags if f.id == "unreachable_internal_edge")
+    assert unreachable.rule != "internal_corners"  # a corner radius (the automatic fix) can't help these

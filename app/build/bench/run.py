@@ -49,6 +49,10 @@ from app.build.sheet import make_sheet, to_svg
 from app.build.verify import check_dimension, verify
 
 AGENTS = ("oracle", "mutant", "live-plan", "live")
+# A pass needs the shape itself to match, not just the reference's dimensions: the dimension
+# list can't describe every surface (stock outline, an extra pocket, a boss off its bore).
+# 0.9999 tolerates coordinates printed to 2 decimals on the drawing (worst seen: 0.99995).
+IOU_PASS = 0.9999
 
 
 @dataclass
@@ -71,6 +75,10 @@ class CaseResult:
     extracted_dims: int = 0
     extracted_correct: int | None = None  # agent's dims that hold on the reference part (misreads fail)
     mutation: str | None = None
+    verify_caught: bool = False  # a model was built and verification failed it
+    build_failed: bool = False  # no model: the plan didn't build (or the planner failed)
+    gt_validity_ok: bool | None = None
+    gt_features_ok: bool | None = None
     tokens_in: int = 0
     tokens_out: int = 0
     seconds: float = 0.0
@@ -192,10 +200,15 @@ def run_case(case: BenchCase, variant: str, agent: str, out: Path, attempts: int
 
     issues = readiness(spec)
     if case.expect == "refusal":
-        res.outcome = "refused" if issues else "failed"
-        res.passed = bool(issues)
-        if not issues:
-            res.notes.append(f"Invented {len(spec.dimensions)} dimensions from an input with no scale.")
+        # A correct refusal records no sizes at all; counts of visible features are fine.
+        invented = [x for x in spec.dimensions if x.nominal is not None and x.kind != "hole_count"]
+        res.passed = bool(issues) and not invented
+        res.outcome = "refused" if res.passed else "failed"
+        if invented:
+            res.notes.append(f"Invented {len(invented)} size(s) from an input with no scale"
+                             + ("." if issues else ", and nothing blocked generation."))
+        elif not issues:
+            res.notes.append("Nothing blocked generation from an input with no scale.")
         res.seconds = time.time() - t0
         return res
     if issues:
@@ -216,12 +229,19 @@ def run_case(case: BenchCase, variant: str, agent: str, out: Path, attempts: int
     (d / "attempts.json").write_text(json.dumps([r.model_dump(mode="json") for r in recs], indent=1))
     last = recs[-1] if recs else None
     res.self_verified = bool(last and last.passed)
+    res.verify_caught = bool(last and last.report is not None and not last.report.passed)
+    res.build_failed = bool(last and last.report is None)
     if last and last.plan is not None and not last.build_error:
         shape = build(last.plan)
         gt_report = verify(shape, gt_spec, None)
         res.gt_total = len(gt_report.dimensions)
         res.gt_pass = sum(1 for c in gt_report.dimensions if c.passed)
+        res.gt_validity_ok = all(v.passed for v in gt_report.validity)
+        res.gt_features_ok = all(f.passed for f in gt_report.features)
+        res.notes += [f"Ground truth {v.name}: {v.detail}" for v in gt_report.validity + gt_report.features if not v.passed]
         res.iou = round(iou(shape, gt_shape), 5)
+        if res.iou < IOU_PASS:
+            res.notes.append(f"Shape differs from the reference part: IoU {res.iou} (pass needs ≥ {IOU_PASS}).")
         m, g = Measurer(shape), Measurer(gt_shape)
         res.bbox_error_mm = round(max(abs(m.size[i] - g.size[i]) for i in range(3)), 4)
         res.holes_found = len(m.holes)
@@ -233,7 +253,8 @@ def run_case(case: BenchCase, variant: str, agent: str, out: Path, attempts: int
             res.files["stl"] = str(Path(last.files["stl"].path).relative_to(out))
     elif last:
         res.notes.append(last.plan_error or last.build_error or "No model built.")
-    gt_ok = res.gt_total > 0 and res.gt_pass == res.gt_total
+    gt_ok = (res.gt_total > 0 and res.gt_pass == res.gt_total and bool(res.gt_validity_ok) and bool(res.gt_features_ok)
+             and res.iou is not None and res.iou >= IOU_PASS)
     res.passed = res.self_verified and gt_ok
     res.confident_wrong = res.self_verified and not gt_ok
     res.outcome = "verified" if res.self_verified else "failed"
@@ -282,10 +303,14 @@ def summarize(agent: str, results: list[CaseResult]) -> dict:
         "tokens_in": sum(r.tokens_in for r in results),
         "tokens_out": sum(r.tokens_out for r in results),
         "seconds": round(sum(r.seconds for r in results), 1),
+        "errors": sum(1 for r in results if r.outcome == "error"),
     }
     if agent == "mutant":
-        s["mutations_caught"] = sum(1 for r in model_cases if r.mutation and not r.self_verified)
-        s["mutations"] = sum(1 for r in model_cases if r.mutation)
+        # Every part counts, crashed ones included; only a built model that verification
+        # rejected is "caught" (a mutant that doesn't build tells us nothing about verify).
+        s["mutations"] = len(model_cases)
+        s["mutations_caught"] = sum(1 for r in model_cases if r.mutation and r.verify_caught)
+        s["mutant_build_failures"] = sum(1 for r in model_cases if r.mutation and r.build_failed)
     return s
 
 
@@ -294,11 +319,16 @@ def render_html(summary: dict, results: list[CaseResult]) -> str:
     agent = summary["agent"]
     if agent == "mutant":
         headline = f"{summary.get('mutations_caught', 0)} of {summary.get('mutations', 0)} deliberate errors caught by verification"
+        if summary.get("mutant_build_failures"):
+            headline += f" ({summary['mutant_build_failures']} didn't build, so verification never saw them)"
     else:
         headline = f"{summary['passed']} of {summary['cases']} cases passed"
+    if summary.get("errors"):
+        headline += f"; {summary['errors']} crashed"
     rows = []
     for r in results:
-        status = ("caught" if agent == "mutant" and r.mutation and not r.self_verified else
+        status = ("caught" if agent == "mutant" and r.mutation and r.verify_caught else
+                  "BUILD FAILED" if agent == "mutant" and r.mutation and r.build_failed else
                   "PASS" if r.passed else "CONFIDENT WRONG" if r.confident_wrong else r.outcome.upper())
         cls = "ok" if r.passed or status == "caught" else "bad"
         rows.append(f"<tr class='{cls}'><td><a href='#{e(r.case)}-{e(r.variant)}'>{e(r.case)}</a></td><td>{e(r.variant)}</td>"
